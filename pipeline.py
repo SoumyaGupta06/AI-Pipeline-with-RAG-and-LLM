@@ -40,7 +40,7 @@ def clean_text(text):
     return text
 
 # Split the text into chunks
-def chunk_text(text, chunk_size=1000, chunk_overlap=100):
+def chunk_text(text, chunk_size=500, chunk_overlap=50):
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
     chunks = text_splitter.split_text(text)
     print(chunks)
