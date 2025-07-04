@@ -126,7 +126,7 @@ def ai_pipeline_development(pdf_path):
 
 def response_generation(vector_db, audio_file):    
     
-	  query_text = speech_to_text(audio_file)
+    query_text = speech_to_text(audio_file)
     response = retrieve_context_response(vector_db, query_text)
     print(response)
     text_to_speech(response)
