@@ -7,9 +7,14 @@ import mimetypes
 import pyttsx3
 from transformers import WhisperProcessor, WhisperForConditionalGeneration, EncoderDecoderCache
 import soundfile as sf
-import requests
-from langchain.chains import RetrievalQA
-from langchain.llms import HuggingFacePipeline
+import numpy as np
+from sentence_transformers import SentenceTransformer
+import chromadb
+import uuid
+from dotenv import load_dotenv
+import os
+import google.generativeai as genai
+
 
 def extract_text_from_pdf(pdf_path):
     text = ""
@@ -27,15 +32,11 @@ def extract_text_from_pdf(pdf_path):
                 text += page.extract_text()
     return text
 
-# Load the data for vector database
-def load_book(file_path):
-    with open(file_path, 'r', encoding='utf-8') as file:
-        text = file.read()
-    return text
 
 # Clean the text
 def clean_text(text):
-    text = re.sub(r'\s+', ' ', text)  
+    text = re.sub(r'\s+', ' ', text) 
+    text = re.sub(r'\n', ' ', text) 
     text = re.sub(r'[^\x00-\x7F]+', ' ', text)  
     return text
 
@@ -43,17 +44,33 @@ def clean_text(text):
 def chunk_text(text, chunk_size=500, chunk_overlap=50):
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
     chunks = text_splitter.split_text(text)
-    print(chunks)
+    print(f"Chunks: {chunks}")
     return chunks
 
-# Create vector database
-def create_vector_db(chunks, embedding_model):
-    vector_db = FAISS.from_texts(chunks, embedding_model)
-    return vector_db
 
-# Speech to text conversion for input query
+def embed(texts):
+    EMBED_MODEL = SentenceTransformer("all-MiniLM-L6-v2")
+    return EMBED_MODEL.encode(texts, normalize_embeddings=True).astype("float32")
+
+chroma_client = chromadb.PersistentClient("chroma_db")
+c_collection = chroma_client.get_or_create_collection("rag_chroma")
+
+def create_vector_db(chunks):
+    c_collection.add(
+        ids=[str(uuid.uuid4()) + f"-{i}" for i in range(len(chunks))],
+        documents=chunks,
+        embeddings=embed(chunks),
+    )
+
+def retrieve_context_response(query: str, k: int = 3):
+    res = c_collection.query(query_texts=[query], n_results=k)
+    full_prompt = f"Context: {res["documents"][0]}\n\nQuestion: {query}\n\nAnswer:"
+    result = model.generate_content(full_prompt)
+    return result.text.strip()
+
 def speech_to_text(audio_file, language='en'):
-    
+   
+    # Speech to text conversion for input query
     processor = WhisperProcessor.from_pretrained("openai/whisper-small")
     model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-small")
     audio_input, _ = sf.read(audio_file)
@@ -62,54 +79,21 @@ def speech_to_text(audio_file, language='en'):
     encoder_decoder_cache = EncoderDecoderCache.from_legacy_cache(past_key_values)
     predicted_ids = model.generate(input_features, past_key_values=encoder_decoder_cache)
     transcription = processor.batch_decode(predicted_ids, skip_special_tokens=True)
-    
     return transcription[0]
 
-# Text to speech for speech response   
 def text_to_speech(text):
     engine = pyttsx3.init()  
     engine.say(text)  
-    engine.runAndWait() 
+    engine.runAndWait()  
 
 
-# retrieving response from LLM 
-# Define the API endpoint and API key
-API_KEY = "key"  
-BASE_URL = "http://127.0.0.1:8080"  
-MODEL_ENDPOINT = "/completion"
+load_dotenv()
+api_key = os.getenv("API_KEY")
+genai.configure(api_key=api_key)
+model = genai.GenerativeModel("gemini-1.5-flash")
 
-url = f"{BASE_URL}{MODEL_ENDPOINT}"
 
-class AnacondaLLM:
-    def __init__(self, api_endpoint, api_key):
-        self.api_endpoint = api_endpoint
-        self.api_key = api_key
-
-    def query(self, prompt):
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
-        data = {
-            "prompt": prompt
-        }
-        response = requests.post(self.api_endpoint, headers=headers, json=data)
-        response.json()
-        return response.json()["content"] 
-
-# Instantiate the AnacondaLLM class
-llm = AnacondaLLM(url, API_KEY)
-
-def retrieve_context_response(vector_db, query_text):
-    retriever = vector_db.as_retriever()
-    relevant_docs = retriever.get_relevant_documents(query_text)
-    context = " ".join([doc.page_content for doc in relevant_docs])
-    print(context)
-    full_prompt = f"Context: {context}\n\nQuestion: {query_text}\n\nAnswer:"
-    result = llm.query(full_prompt)
-    
-    return result
-
+# Executing AI pipeline
 def ai_pipeline_development(pdf_path):
 
     # Load and preprocess the PDF
@@ -118,30 +102,31 @@ def ai_pipeline_development(pdf_path):
     chunks = chunk_text(cleaned_text)
     
     # Create or load vector database
-    embedding_model = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-    vector_db = create_vector_db(chunks, embedding_model)
+    vector_db = create_vector_db(chunks)
     
     return vector_db
 
 
-def response_generation(vector_db, audio_file):    
+# Response generation
+def response_generation(audio_file):    
     
     query_text = speech_to_text(audio_file)
-    response = retrieve_context_response(vector_db, query_text)
-    print(response)
+    response = retrieve_context_response(query_text)
+    print(f"Response: {response}")
     text_to_speech(response)
     return response
 
 
 def main():
 
-pdf_path = 'D:/path/file.pdf'
-db = ai_pipeline_development(pdf_path)
+    pdf_path = 'D:/Indiabe/bio.pdf'
+    ai_pipeline_development(pdf_path)
 
-audio_file = 'D:/path/test_audio.wav'
-response = response_generation(db, audio_file)
+    audio_file = 'D:/Indiabe/test.wav'
+    response_generation(audio_file)
 
 
 if __name__ == '__main__':
     main()
     
+
